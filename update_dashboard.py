@@ -347,8 +347,8 @@ def main():
     new_lines = []
     n1 = 0
     for line in lines:
-        if re.match(r'\s*var allData\s*=\s*\{', line):
-            new_lines.append(f'var allData = {new_json};')
+        if re.match(r'\s*(var|let|const)\s+allData\s*=\s*\{', line):
+            new_lines.append(f'let allData = {new_json};')
             n1 += 1
         else:
             new_lines.append(line)
