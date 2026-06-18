@@ -342,11 +342,18 @@ def main():
 
     new_json = json.dumps(all_data, ensure_ascii=False, separators=(',', ':'))
 
-    html, n1 = re.subn(
-        r'(var allData\s*=\s*)\{[\s\S]*?\}(\s*;)',
-        lambda m: m.group(1) + new_json + m.group(2),
-        html
-    )
+    # Replace line-by-line (more robust than regex for large nested JSON)
+    lines = html.split('\n')
+    new_lines = []
+    n1 = 0
+    for line in lines:
+        if re.match(r'\s*var allData\s*=\s*\{', line):
+            new_lines.append(f'var allData = {new_json};')
+            n1 += 1
+        else:
+            new_lines.append(line)
+    html = '\n'.join(new_lines)
+
     if n1 == 0:
         print("ERROR: no se encontró 'var allData' en el HTML", file=sys.stderr)
         sys.exit(1)
