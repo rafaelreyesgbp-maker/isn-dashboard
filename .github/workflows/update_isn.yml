@@ -32,5 +32,10 @@ jobs:
           default_author: github_actions
           add: 'isn_dashboard_live.html'
 
+      - name: Preparar carpeta de deploy
+        run: |
+          mkdir -p deploy
+          cp isn_dashboard_live.html deploy/index.html
+
       - name: Deploy a Netlify
-        run: npx netlify-cli@latest deploy --prod --dir . --site ${{ secrets.NETLIFY_SITE_ID }} --auth ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: npx netlify-cli@latest deploy --prod --dir deploy --site ${{ secrets.NETLIFY_SITE_ID }} --auth ${{ secrets.NETLIFY_AUTH_TOKEN }}
