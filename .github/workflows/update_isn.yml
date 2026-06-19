@@ -2,8 +2,8 @@ name: Actualizar Dashboard ISN
 
 on:
   schedule:
-    # Lunes a viernes a las 7:00 AM hora México (UTC-6 → 13:00 UTC)
-    - cron: '0 13 * * 1-5'
+    # Lunes a viernes a las 10:00 AM hora México (UTC-5 verano → 15:00 UTC)
+    - cron: '0 15 * * 1-5'
   workflow_dispatch:   # permite ejecutar manualmente desde GitHub
 
 jobs:
