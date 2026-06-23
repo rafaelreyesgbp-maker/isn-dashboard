@@ -242,7 +242,7 @@ def compute_month(month_num, all_month_data):
         })
 
     omisos.sort(key=lambda o: -o['avg'])
-    esperado   = sum(o['avg'] for o in omisos)
+    esperado   = sum(o['avg'] for o in omisos if o['seg'] in ('alta', 'media'))
     proyeccion = acumulado + esperado
     meta       = METAS.get(month_num, 0)
 
