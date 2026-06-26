@@ -85,8 +85,13 @@ def parse_sheet(ws):
     records = []
     for i in range(hrow + 1, ws.nrows):
         try:
-            rfc = str(ws.cell_value(i, rfc_ci)).strip().upper()
-            if not rfc or len(rfc) < 10:
+            rfc_raw = ws.cell_value(i, rfc_ci)
+            # xlrd puede devolver RFC como float si la celda está formateada como número
+            if isinstance(rfc_raw, float):
+                rfc = str(int(rfc_raw)).strip().upper()
+            else:
+                rfc = str(rfc_raw).strip().upper()
+            if not rfc or rfc in ("RFC", "0", ""):
                 continue
 
             # Periodo: si no tiene formato YYYYMM válido se deja vacío
@@ -133,11 +138,15 @@ def parse_xls(file_bytes, month_num):
         ws = wb.sheet_by_index(sheet_idx)
         sheet_records = parse_sheet(ws)
         if sheet_records:
-            print(f"    hoja {sheet_idx} '{ws.name}': {len(sheet_records)} registros")
+            sheet_total = sum(r['recaudacion'] for r in sheet_records)
+            print(f"    hoja {sheet_idx} '{ws.name}': {len(sheet_records)} registros, recaudación=${sheet_total:,.0f}")
             all_records.extend(sheet_records)
 
     if not all_records:
         print("  No se encontró fila de encabezado en ninguna hoja", file=sys.stderr)
+    else:
+        total = sum(r['recaudacion'] for r in all_records)
+        print(f"    TOTAL recaudación: ${total:,.0f} ({len(all_records)} registros)")
 
     return all_records
 
