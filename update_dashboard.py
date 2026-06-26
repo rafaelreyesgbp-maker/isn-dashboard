@@ -189,15 +189,26 @@ def compute_month(month_num, all_month_data):
     # Periodos pagados globalmente (todos los meses hasta este)
     global_periods = defaultdict(dict)
     global_contrib = {}
+    # RFCs con al menos 1 pago 2026 en cualquier mes (para candidatura ampliada)
+    any_2026_payer = set()
+    all_months_periods = defaultdict(dict)  # para avg cuando no hay datos en ref_months
+
     for m in range(1, month_num + 1):
         for r in all_month_data.get(m, []):
-            gp = global_periods[r['rfc']]
-            if r['periodo'] not in gp or r['recaudacion'] > gp[r['periodo']]:
-                gp[r['periodo']] = r['recaudacion']
+            if r['periodo'] and len(str(r['periodo'])) == 6:
+                gp = global_periods[r['rfc']]
+                if r['periodo'] not in gp or r['recaudacion'] > gp[r['periodo']]:
+                    gp[r['periodo']] = r['recaudacion']
+                if str(r['periodo']).startswith('2026'):
+                    any_2026_payer.add(r['rfc'])
+                # Guardar todos los montos para calcular avg cuando ref_months no cubre
+                ap = all_months_periods[r['rfc']]
+                if r['periodo'] not in ap or r['recaudacion'] > ap[r['periodo']]:
+                    ap[r['periodo']] = r['recaudacion']
             if r['rfc'] not in global_contrib and r['contrib']:
                 global_contrib[r['rfc']] = r['contrib']
 
-    # Conteo de meses de referencia y montos por RFC
+    # Conteo de meses de referencia y montos por RFC (ventana últimos 4 meses)
     rfc_ref_count   = defaultdict(int)
     rfc_ref_periods = defaultdict(dict)
     rfc_contrib     = {}
@@ -206,20 +217,25 @@ def compute_month(month_num, all_month_data):
     for rm in ref_months:
         seen = set()
         for r in all_month_data.get(rm, []):
-            rp = rfc_ref_periods[r['rfc']]
-            if r['periodo'] not in rp or r['recaudacion'] > rp[r['periodo']]:
-                rp[r['periodo']] = r['recaudacion']
-            if str(r['periodo']).startswith('2026'):
-                paid_2026_in_ref[r['rfc']].add(str(r['periodo']))
+            if r['periodo'] and len(str(r['periodo'])) == 6:
+                rp = rfc_ref_periods[r['rfc']]
+                if r['periodo'] not in rp or r['recaudacion'] > rp[r['periodo']]:
+                    rp[r['periodo']] = r['recaudacion']
+                if str(r['periodo']).startswith('2026'):
+                    paid_2026_in_ref[r['rfc']].add(str(r['periodo']))
             if r['rfc'] not in seen:
                 seen.add(r['rfc'])
                 rfc_ref_count[r['rfc']] += 1
             if r['rfc'] not in rfc_contrib and r['contrib']:
                 rfc_contrib[r['rfc']] = r['contrib']
 
-    # Candidatos: ≥2 meses ref O ≥2 periodos 2026 en meses ref (lote payers)
+    # Candidatos:
+    #   1) ≥2 meses de referencia recientes (ventana 4 meses)
+    #   2) ≥2 periodos 2026 distintos en ref_months (lote payers)
+    #   3) cualquier RFC con ≥1 pago 2026 en cualquier mes anterior (captura omisos desde enero)
     candidates = {rfc for rfc, cnt in rfc_ref_count.items() if cnt >= 2}
     candidates |= {rfc for rfc, ps in paid_2026_in_ref.items() if len(ps) >= 2}
+    candidates |= any_2026_payer  # ampliado: cualquier pagador 2026 que no pagó el mes vigente
 
     omisos = []
     for rfc in candidates:
@@ -239,15 +255,20 @@ def compute_month(month_num, all_month_data):
         if not missing:
             continue
 
+        # Usar montos de ref_months si existen; si no, caer en all_months_periods
         ref_amounts = list(rfc_ref_periods[rfc].values())
+        if not ref_amounts:
+            ref_amounts = list(all_months_periods[rfc].values())
         if not ref_amounts:
             continue
 
         avg = sum(ref_amounts) / len(ref_amounts)
         est = avg * len(missing)
 
+        # Segmentación: basada en apariciones en ventana de 4 meses
+        # RFCs que entraron solo por any_2026_payer (cnt<2) van a seguimiento
         seg = ('omisos_totales' if not has_2026
-               else 'alta'       if cnt >= n_ref
+               else 'alta'       if cnt >= n_ref and n_ref >= 2
                else 'media'      if cnt >= 3
                else 'seguimiento')
 
