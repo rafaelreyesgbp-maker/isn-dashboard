@@ -85,13 +85,10 @@ def parse_xls(file_bytes, month_num):
             break
 
     contrib_ci  = rfc_ci + 1
-    periodo_ci  = header.index("PERIODO")   if "PERIODO"  in header else -1
-    impuesto_ci = header.index("IMPUESTO")  if "IMPUESTO" in header else -1
-    act_ci      = header.index("ACT.")      if "ACT."     in header else -1
-
-    if periodo_ci < 0 or impuesto_ci < 0:
-        print(f"  Columnas faltantes: periodo={periodo_ci} impuesto={impuesto_ci}", file=sys.stderr)
-        return []
+    # Columnas por posición fija: F=5 (periodo), J=9 (estímulo), L=11 (impuesto), N=13 (act)
+    periodo_ci  = 5
+    impuesto_ci = 11
+    act_ci      = 13
 
     records = []
     for i in range(hrow + 1, ws.nrows):
@@ -100,6 +97,8 @@ def parse_xls(file_bytes, month_num):
             if not rfc or len(rfc) < 12:
                 continue
 
+            if ws.ncols <= periodo_ci:
+                continue
             periodo_raw = ws.cell_value(i, periodo_ci)
             try:
                 periodo = str(int(float(str(periodo_raw))))
@@ -109,13 +108,15 @@ def parse_xls(file_bytes, month_num):
             if len(periodo) != 6:
                 continue
 
-            imp = float(ws.cell_value(i, impuesto_ci)) if impuesto_ci >= 0 else 0.0
-            act = float(ws.cell_value(i, act_ci))      if act_ci     >= 0 else 0.0
-            contrib = str(ws.cell_value(i, contrib_ci)).strip() if contrib_ci < ws.ncols else ""
+            imp      = float(ws.cell_value(i, impuesto_ci)) if ws.ncols > impuesto_ci else 0.0
+            act      = float(ws.cell_value(i, act_ci))      if ws.ncols > act_ci      else 0.0
+            estimulo = float(ws.cell_value(i, 9))            if ws.ncols > 9           else 0.0  # Columna J
+            contrib  = str(ws.cell_value(i, contrib_ci)).strip() if contrib_ci < ws.ncols else ""
 
             records.append({
                 "rfc": rfc, "periodo": periodo,
-                "recaudacion": imp + act, "contrib": contrib
+                "recaudacion": imp + act, "contrib": contrib,
+                "estimulo": estimulo
             })
         except Exception:
             continue
@@ -242,8 +243,9 @@ def compute_month(month_num, all_month_data):
         })
 
     omisos.sort(key=lambda o: -o['avg'])
-    esperado   = sum(o['avg'] for o in omisos if o['seg'] in ('alta', 'media'))
-    proyeccion = acumulado + esperado
+    esperado        = sum(o['avg'] for o in omisos if o['seg'] in ('alta', 'media'))
+    proyeccion      = acumulado + esperado
+    total_estimulo  = sum(r.get('estimulo', 0) for r in cur)
     meta       = METAS.get(month_num, 0)
 
     # Segmentos
@@ -271,6 +273,7 @@ def compute_month(month_num, all_month_data):
         'acumulado_real':   round(acumulado),
         'total_omisos':     len(omisos),
         'total_esperado':   esperado,
+        'total_estimulo':   round(total_estimulo),
         'proyeccion_cierre': round(proyeccion),
         'meta_cruzada':     proyeccion >= meta,
         'pct_acumulado':    acumulado / meta * 100 if meta else 0,
