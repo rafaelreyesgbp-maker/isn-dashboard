@@ -55,15 +55,8 @@ def drive_download(file_id):
     return resp.content
 
 # ── XLS parsing (replica _parseWorkbook del JS) ───────────────────
-def parse_xls(file_bytes, month_num):
-    try:
-        wb = xlrd.open_workbook(file_contents=file_bytes)
-    except Exception as e:
-        print(f"  xlrd error: {e}", file=sys.stderr)
-        return []
-
-    ws = wb.sheet_by_index(0)
-
+def parse_sheet(ws):
+    """Parsea una hoja XLS y devuelve lista de registros."""
     # Buscar fila de encabezado (debe tener RFC e IMPUESTO)
     hrow, header = -1, None
     for i in range(min(15, ws.nrows)):
@@ -73,14 +66,13 @@ def parse_xls(file_bytes, month_num):
             break
 
     if hrow < 0:
-        print("  No se encontró fila de encabezado", file=sys.stderr)
         return []
 
     # Detectar columna RFC real (puede estar desplazada)
     rfc_ci = header.index("RFC")
     for c in range(rfc_ci, min(rfc_ci + 5, ws.ncols)):
         val = str(ws.cell_value(hrow + 1, c)).strip()
-        if len(val) >= 12:
+        if len(val) >= 10:
             rfc_ci = c
             break
 
@@ -94,24 +86,28 @@ def parse_xls(file_bytes, month_num):
     for i in range(hrow + 1, ws.nrows):
         try:
             rfc = str(ws.cell_value(i, rfc_ci)).strip().upper()
-            if not rfc or len(rfc) < 12:
+            if not rfc or len(rfc) < 10:
                 continue
 
-            if ws.ncols <= periodo_ci:
-                continue
-            periodo_raw = ws.cell_value(i, periodo_ci)
-            try:
-                periodo = str(int(float(str(periodo_raw))))
-            except Exception:
-                periodo = str(periodo_raw).strip()
-
-            if len(periodo) != 6:
-                continue
+            # Periodo: si no tiene formato YYYYMM válido se deja vacío
+            # (la fila igual cuenta para recaudación, pero no para omisos)
+            periodo = ""
+            if ws.ncols > periodo_ci:
+                periodo_raw = ws.cell_value(i, periodo_ci)
+                try:
+                    periodo = str(int(float(str(periodo_raw))))
+                except Exception:
+                    periodo = str(periodo_raw).strip()
+                if len(periodo) != 6:
+                    periodo = ""
 
             imp      = float(ws.cell_value(i, impuesto_ci)) if ws.ncols > impuesto_ci else 0.0
             act      = float(ws.cell_value(i, act_ci))      if ws.ncols > act_ci      else 0.0
             estimulo = float(ws.cell_value(i, 9))            if ws.ncols > 9           else 0.0  # Columna J
             contrib  = str(ws.cell_value(i, contrib_ci)).strip() if contrib_ci < ws.ncols else ""
+
+            if imp == 0.0 and act == 0.0:
+                continue  # fila vacía
 
             records.append({
                 "rfc": rfc, "periodo": periodo,
@@ -122,6 +118,28 @@ def parse_xls(file_bytes, month_num):
             continue
 
     return records
+
+
+def parse_xls(file_bytes, month_num):
+    try:
+        wb = xlrd.open_workbook(file_contents=file_bytes)
+    except Exception as e:
+        print(f"  xlrd error: {e}", file=sys.stderr)
+        return []
+
+    # Leer todas las hojas y combinar registros
+    all_records = []
+    for sheet_idx in range(wb.nsheets):
+        ws = wb.sheet_by_index(sheet_idx)
+        sheet_records = parse_sheet(ws)
+        if sheet_records:
+            print(f"    hoja {sheet_idx} '{ws.name}': {len(sheet_records)} registros")
+            all_records.extend(sheet_records)
+
+    if not all_records:
+        print("  No se encontró fila de encabezado en ninguna hoja", file=sys.stderr)
+
+    return all_records
 
 # ── Lógica ISN (replica computeMonth del JS) ──────────────────────
 def prev_period(p):
