@@ -5,14 +5,15 @@
  *   <script src="chatbot-aafy.js"></script>
  */
 (function () {
-  const STORAGE_KEY    = 'aafy_gemini_key';
-  const DRIVE_KEY_STORE = 'aafy_drive_key';
-  const DRIVE_FOLDER   = '1IvbQNewoE3n6GSMTUeAAeZZR2AGEaLo3';
-  const COL_RFC        = 0;    // Columna A: RFC
-  const COL_CONTRIB    = 1;    // Columna B: Contribuyente
-  const COL_PERIODO    = 5;    // Columna F: Periodo de pago
-  const COL_L          = 11;   // Columna L: Recaudación 1
-  const COL_N          = 13;   // Columna N: Recaudación 2
+  const STORAGE_KEY      = 'aafy_gemini_key';
+  const DRIVE_KEY_STORE  = 'aafy_drive_key';
+  const SCRIPT_URL_STORE = 'aafy_script_url';
+  const DRIVE_FOLDER     = '1IvbQNewoE3n6GSMTUeAAeZZR2AGEaLo3';
+  const COL_RFC          = 0;
+  const COL_CONTRIB      = 1;
+  const COL_PERIODO      = 5;
+  const COL_L            = 11;
+  const COL_N            = 13;
 
   /* ── Estilos ── */
   const style = document.createElement('style');
@@ -138,16 +139,16 @@
         Analizando datos...
       </div>
       <div id="aafy-key-bar">
-        <div style="width:100%;font-weight:700;margin-bottom:4px">🔑 Configura tus claves API (una sola vez)</div>
+        <div style="width:100%;font-weight:700;margin-bottom:4px">🔑 Configuración (una sola vez)</div>
         <div style="width:100%;display:flex;gap:6px;align-items:center">
-          <span style="white-space:nowrap;font-size:11px">Gemini (IA):</span>
-          <input type="password" id="aafy-key-in" placeholder="AIzaSy... (de aistudio.google.com)">
+          <span style="white-space:nowrap;font-size:11px">Gemini:</span>
+          <input type="password" id="aafy-key-in" placeholder="AIzaSy... (aistudio.google.com)">
         </div>
         <div style="width:100%;display:flex;gap:6px;align-items:center;margin-top:4px">
-          <span style="white-space:nowrap;font-size:11px">Drive (datos):</span>
-          <input type="password" id="aafy-drive-in" placeholder="AIzaSy... (la misma del dashboard)">
+          <span style="white-space:nowrap;font-size:11px">Apps Script URL:</span>
+          <input type="text" id="aafy-script-in" placeholder="https://script.google.com/macros/s/...">
         </div>
-        <button id="aafy-key-ok" style="margin-top:6px;width:100%">Guardar claves</button>
+        <button id="aafy-key-ok" style="margin-top:6px;width:100%">Guardar</button>
       </div>
       <div id="aafy-input-row">
         <textarea id="aafy-input" placeholder="Escribe tu pregunta..." rows="1"></textarea>
@@ -165,9 +166,10 @@
   const keyBar  = document.getElementById('aafy-key-bar');
   const keyIn   = document.getElementById('aafy-key-in');
 
-  let open    = false;
-  let gemKey  = localStorage.getItem(STORAGE_KEY)    || '';
-  let driveKey = localStorage.getItem(DRIVE_KEY_STORE) || '';
+  let open      = false;
+  let gemKey    = localStorage.getItem(STORAGE_KEY)      || '';
+  let driveKey  = localStorage.getItem(DRIVE_KEY_STORE)  || '';
+  let scriptUrl = localStorage.getItem(SCRIPT_URL_STORE) || '';
 
   /* ── Toggle panel ── */
   function toggle() {
@@ -181,7 +183,7 @@
   }
 
   function checkKey() {
-    keyBar.style.display = (gemKey && driveKey) ? 'none' : 'flex';
+    keyBar.style.display = (gemKey && scriptUrl) ? 'none' : 'flex';
   }
 
   /* ── Añadir mensaje ── */
@@ -513,24 +515,17 @@
     const ctx = getContext();
 
     let driveCtx = null;
-    if (driveKey) {
-      const driveMsg = addMsg('bot', '⏳ Consultando archivos de Drive...');
+    if (scriptUrl) {
+      const driveMsg = addMsg('bot', '⏳ Consultando datos de nómina...');
       try {
-        driveCtx = await fetchDriveContext(driveKey);
-        if (driveCtx && driveCtx.error) {
-          driveMsg.textContent = '⚠ Drive: ' + driveCtx.error;
-          driveCtx = null;
-        } else if (!driveCtx) {
-          driveMsg.textContent = '⚠ Drive: No se pudo acceder a la carpeta. Verifica que la clave tenga la Drive API habilitada y que la carpeta sea accesible.';
-        } else if (driveCtx.nota) {
-          driveMsg.textContent = '⚠ Drive: ' + driveCtx.nota;
-          driveCtx = null;
-        } else {
-          driveMsg.textContent = `✓ Drive: ${driveCtx.total_registros} registros de ${driveCtx.archivos?.length || 0} archivo(s). Analizando...`;
-        }
+        const res = await fetch(scriptUrl);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Error en el script');
+        driveCtx = data;
+        driveMsg.textContent = `✓ Nómina: ${(data.total_registros||0).toLocaleString('es-MX')} registros · Recaudación total: $${(data.recaudacion_total||0).toLocaleString('es-MX')}`;
       } catch (e) {
-        driveMsg.textContent = '⚠ Drive error: ' + e.message;
-        driveCtx = null;
+        driveMsg.textContent = '⚠ Apps Script: ' + e.message;
       }
     }
 
@@ -596,23 +591,22 @@ Responde con números exactos cuando los tengas. Menciona de qué archivo o fuen
   });
 
   document.getElementById('aafy-key-ok').addEventListener('click', () => {
-    const kGem   = keyIn.value.trim();
-    const kDrive = document.getElementById('aafy-drive-in').value.trim();
-    if (!kGem && !kDrive) return;
-    if (kGem)   { gemKey   = kGem;   localStorage.setItem(STORAGE_KEY,    kGem);   keyIn.value = ''; }
-    if (kDrive) { driveKey = kDrive; localStorage.setItem(DRIVE_KEY_STORE, kDrive); document.getElementById('aafy-drive-in').value = ''; }
-    if (gemKey && driveKey) {
+    const kGem    = keyIn.value.trim();
+    const kScript = document.getElementById('aafy-script-in').value.trim();
+    if (kGem)    { gemKey    = kGem;    localStorage.setItem(STORAGE_KEY,      kGem);    keyIn.value = ''; }
+    if (kScript) { scriptUrl = kScript; localStorage.setItem(SCRIPT_URL_STORE, kScript); document.getElementById('aafy-script-in').value = ''; }
+    if (gemKey && scriptUrl) {
       keyBar.style.display = 'none';
-      addMsg('bot', '✓ Claves guardadas. ¡Listo! Puedo consultar tanto los datos del dashboard como los archivos de Drive.');
-    } else if (gemKey) {
-      addMsg('bot', '✓ Clave Gemini guardada. Falta la clave de Drive para acceder a los datos completos.');
+      addMsg('bot', '✓ Configuración guardada. ¡Listo! Puedo analizar los datos del dashboard y la nómina completa de Drive.');
+    } else if (gemKey && !scriptUrl) {
+      addMsg('bot', '✓ Clave Gemini guardada. Falta la URL del Apps Script para acceder a los datos de nómina.');
     }
   });
 
   keyIn.addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('aafy-key-ok').click();
   });
-  document.getElementById('aafy-drive-in').addEventListener('keydown', e => {
+  document.getElementById('aafy-script-in').addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('aafy-key-ok').click();
   });
 })();
