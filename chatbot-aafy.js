@@ -5,7 +5,13 @@
  *   <script src="chatbot-aafy.js"></script>
  */
 (function () {
-  const STORAGE_KEY = 'aafy_gemini_key';
+  const STORAGE_KEY    = 'aafy_gemini_key';
+  const DRIVE_FOLDER   = '1IvbQNewoE3n6GSMTUeAAeZZR2AGEaLo3';
+  const COL_RFC        = 0;    // Columna A: RFC
+  const COL_CONTRIB    = 1;    // Columna B: Contribuyente
+  const COL_PERIODO    = 5;    // Columna F: Periodo de pago
+  const COL_L          = 11;   // Columna L: Recaudación 1
+  const COL_N          = 13;   // Columna N: Recaudación 2
 
   /* ── Estilos ── */
   const style = document.createElement('style');
@@ -178,6 +184,132 @@
     msgs.scrollTop = msgs.scrollHeight;
   }
 
+  /* ── Helpers para Drive ── */
+  function parseMXN(val) {
+    if (val === undefined || val === null || val === '') return 0;
+    return parseFloat(String(val).replace(/[$,\s]/g, '')) || 0;
+  }
+
+  function parseCSV(text) {
+    const lines = text.split('\n');
+    return lines.map(line => {
+      const cols = []; let cur = '', inQ = false;
+      for (const ch of line + ',') {
+        if (ch === '"') { inQ = !inQ; }
+        else if (ch === ',' && !inQ) { cols.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+      return cols;
+    }).filter(r => r.length > 1 && r.some(c => c));
+  }
+
+  async function fetchDriveContext(driveKey) {
+    try {
+      // 1. Listar archivos en la carpeta
+      const listRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q='${DRIVE_FOLDER}'+in+parents` +
+        `&fields=files(id,name,mimeType)&orderBy=name&key=${driveKey}`
+      );
+      if (!listRes.ok) return null;
+      const { files = [] } = await listRes.json();
+
+      const sheets = files.filter(f =>
+        f.mimeType === 'application/vnd.google-apps.spreadsheet'
+      );
+      if (!sheets.length) return { archivos: files.map(f => f.name), nota: 'No se encontraron hojas de cálculo.' };
+
+      // 2. Descargar y parsear cada hoja como CSV
+      let headers = null;
+      const allRows = [];
+
+      for (const sheet of sheets.slice(0, 12)) {
+        try {
+          const csvRes = await fetch(
+            `https://docs.google.com/spreadsheets/d/${sheet.id}/export?format=csv&key=${driveKey}`
+          );
+          if (!csvRes.ok) continue;
+          const rows = parseCSV(await csvRes.text());
+          if (rows.length < 2) continue;
+          if (!headers) headers = rows[0];
+          rows.slice(1).forEach(r => {
+            if (r.some(c => c)) allRows.push({ _archivo: sheet.name, _row: r });
+          });
+        } catch { continue; }
+      }
+
+      if (!allRows.length) return { archivos: sheets.map(s => s.name), nota: 'Archivos vacíos o sin acceso.' };
+
+      // 3. Calcular recaudación (col L + col N) por entidad (col A o B)
+      let totalL = 0, totalN = 0;
+      const byEntity = {};
+
+      allRows.forEach(({ _archivo, _row }) => {
+        const rfc      = (_row[COL_RFC]     || '').trim();
+        const contrib  = (_row[COL_CONTRIB] || '').trim();
+        const periodo  = (_row[COL_PERIODO] || '').trim();
+        const l        = parseMXN(_row[COL_L]);
+        const n        = parseMXN(_row[COL_N]);
+        totalL += l;
+        totalN += n;
+
+        // Agrupar por RFC + Contribuyente
+        const key = rfc || contrib;
+        if (key) {
+          if (!byEntity[key]) byEntity[key] = { rfc, contribuyente: contrib, colL: 0, colN: 0, periodos: new Set(), archivo: _archivo };
+          byEntity[key].colL += l;
+          byEntity[key].colN += n;
+          if (periodo) byEntity[key].periodos.add(periodo);
+        }
+      });
+
+      // Top 50 contribuyentes por recaudación total
+      const topEntidades = Object.entries(byEntity)
+        .map(([, v]) => ({
+          rfc: v.rfc,
+          contribuyente: v.contribuyente,
+          recaudacion_total: v.colL + v.colN,
+          col_L: v.colL,
+          col_N: v.colN,
+          periodos: [...v.periodos].join(', '),
+          archivo: v.archivo
+        }))
+        .sort((a, b) => b.recaudacion_total - a.recaudacion_total)
+        .slice(0, 50);
+
+      // Agrupar también por periodo
+      const byPeriodo = {};
+      allRows.forEach(({ _row }) => {
+        const periodo = (_row[COL_PERIODO] || 'Sin periodo').trim();
+        if (!byPeriodo[periodo]) byPeriodo[periodo] = { colL: 0, colN: 0, registros: 0 };
+        byPeriodo[periodo].colL    += parseMXN(_row[COL_L]);
+        byPeriodo[periodo].colN    += parseMXN(_row[COL_N]);
+        byPeriodo[periodo].registros++;
+      });
+
+      return {
+        archivos: sheets.map(s => s.name),
+        total_registros: allRows.length,
+        encabezados: headers,
+        estructura: { A: 'RFC', B: 'Contribuyente', F: 'Periodo de pago', L: 'Recaudación col L', N: 'Recaudación col N' },
+        recaudacion_col_L: totalL,
+        recaudacion_col_N: totalN,
+        recaudacion_total: totalL + totalN,
+        por_periodo: byPeriodo,
+        top_contribuyentes: topEntidades,
+        muestra_filas: allRows.slice(0, 20).map(r => ({
+          rfc: r._row[COL_RFC],
+          contribuyente: r._row[COL_CONTRIB],
+          periodo: r._row[COL_PERIODO],
+          col_L: r._row[COL_L],
+          col_N: r._row[COL_N],
+        }))
+      };
+
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
   /* ── Genera resumen estadístico del dataset completo ── */
   function resumeDataset(rows) {
     if (!rows || !rows.length) return null;
@@ -310,14 +442,24 @@
     msgs.scrollTop = msgs.scrollHeight;
 
     const ctx = getContext();
-    const prompt = `Eres un asistente fiscal experto de la Agencia de Administración Fiscal del Estado de Yucatán (AAFY). Analiza los datos del siguiente dashboard y responde en español de forma concisa, directa y profesional.
 
-DATOS ACTUALES DEL DASHBOARD:
+    // Intentar leer datos de Drive (usa API_KEY del dashboard si existe, o la key de Gemini)
+    const driveKey = window.API_KEY || gemKey;
+    let driveCtx = null;
+    try { driveCtx = await fetchDriveContext(driveKey); } catch { driveCtx = null; }
+
+    const prompt = `Eres un asistente fiscal experto de la Agencia de Administración Fiscal del Estado de Yucatán (AAFY). Responde en español de forma concisa, directa y profesional.
+
+DATOS DEL DASHBOARD (DOM):
 ${ctx}
+
+${driveCtx ? `DATOS COMPLETOS DE GOOGLE DRIVE (carpeta de recaudación):
+La recaudación se calcula sumando columna L + columna N.
+${JSON.stringify(driveCtx, null, 2)}` : '(Sin acceso a Drive en este momento)'}
 
 PREGUNTA: ${text}
 
-Responde de forma breve. Usa números exactos cuando los tengas. Si detectas algo relevante fuera de lo preguntado (riesgo de no cumplir meta, omisos críticos, etc.), menciónalo en una línea al final.`;
+Responde con números exactos cuando los tengas. Menciona de qué archivo o fuente viene la información. Si no encuentras el dato específico pedido, di claramente qué sí tienes disponible.`;
 
     try {
       const res = await fetch(
