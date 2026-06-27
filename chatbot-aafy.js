@@ -6,6 +6,7 @@
  */
 (function () {
   const STORAGE_KEY    = 'aafy_gemini_key';
+  const DRIVE_KEY_STORE = 'aafy_drive_key';
   const DRIVE_FOLDER   = '1IvbQNewoE3n6GSMTUeAAeZZR2AGEaLo3';
   const COL_RFC        = 0;    // Columna A: RFC
   const COL_CONTRIB    = 1;    // Columna B: Contribuyente
@@ -137,9 +138,16 @@
         Analizando datos...
       </div>
       <div id="aafy-key-bar">
-        <span>🔑 Pega tu API Key de Google AI:</span>
-        <input type="password" id="aafy-key-in" placeholder="AIzaSy...">
-        <button id="aafy-key-ok">Guardar</button>
+        <div style="width:100%;font-weight:700;margin-bottom:4px">🔑 Configura tus claves API (una sola vez)</div>
+        <div style="width:100%;display:flex;gap:6px;align-items:center">
+          <span style="white-space:nowrap;font-size:11px">Gemini (IA):</span>
+          <input type="password" id="aafy-key-in" placeholder="AIzaSy... (de aistudio.google.com)">
+        </div>
+        <div style="width:100%;display:flex;gap:6px;align-items:center;margin-top:4px">
+          <span style="white-space:nowrap;font-size:11px">Drive (datos):</span>
+          <input type="password" id="aafy-drive-in" placeholder="AIzaSy... (la misma del dashboard)">
+        </div>
+        <button id="aafy-key-ok" style="margin-top:6px;width:100%">Guardar claves</button>
       </div>
       <div id="aafy-input-row">
         <textarea id="aafy-input" placeholder="Escribe tu pregunta..." rows="1"></textarea>
@@ -157,8 +165,9 @@
   const keyBar  = document.getElementById('aafy-key-bar');
   const keyIn   = document.getElementById('aafy-key-in');
 
-  let open = false;
-  let gemKey = localStorage.getItem(STORAGE_KEY) || '';
+  let open    = false;
+  let gemKey  = localStorage.getItem(STORAGE_KEY)    || '';
+  let driveKey = localStorage.getItem(DRIVE_KEY_STORE) || '';
 
   /* ── Toggle panel ── */
   function toggle() {
@@ -172,7 +181,7 @@
   }
 
   function checkKey() {
-    keyBar.style.display = gemKey ? 'none' : 'flex';
+    keyBar.style.display = (gemKey && driveKey) ? 'none' : 'flex';
   }
 
   /* ── Añadir mensaje ── */
@@ -443,10 +452,10 @@
 
     const ctx = getContext();
 
-    // Intentar leer datos de Drive (usa API_KEY del dashboard si existe, o la key de Gemini)
-    const driveKey = window.API_KEY || gemKey;
     let driveCtx = null;
-    try { driveCtx = await fetchDriveContext(driveKey); } catch { driveCtx = null; }
+    if (driveKey) {
+      try { driveCtx = await fetchDriveContext(driveKey); } catch { driveCtx = null; }
+    }
 
     const prompt = `Eres un asistente fiscal experto de la Agencia de Administración Fiscal del Estado de Yucatán (AAFY). Responde en español de forma concisa, directa y profesional.
 
@@ -510,17 +519,23 @@ Responde con números exactos cuando los tengas. Menciona de qué archivo o fuen
   });
 
   document.getElementById('aafy-key-ok').addEventListener('click', () => {
-    const k = keyIn.value.trim();
-    if (!k) return;
-    gemKey = k;
-    localStorage.setItem(STORAGE_KEY, k);
-    keyIn.value = '';
-    keyBar.style.display = 'none';
-    addMsg('bot', '✓ API Key guardada. ¡Listo! Ahora puedes hacerme preguntas sobre los datos del dashboard.');
+    const kGem   = keyIn.value.trim();
+    const kDrive = document.getElementById('aafy-drive-in').value.trim();
+    if (!kGem && !kDrive) return;
+    if (kGem)   { gemKey   = kGem;   localStorage.setItem(STORAGE_KEY,    kGem);   keyIn.value = ''; }
+    if (kDrive) { driveKey = kDrive; localStorage.setItem(DRIVE_KEY_STORE, kDrive); document.getElementById('aafy-drive-in').value = ''; }
+    if (gemKey && driveKey) {
+      keyBar.style.display = 'none';
+      addMsg('bot', '✓ Claves guardadas. ¡Listo! Puedo consultar tanto los datos del dashboard como los archivos de Drive.');
+    } else if (gemKey) {
+      addMsg('bot', '✓ Clave Gemini guardada. Falta la clave de Drive para acceder a los datos completos.');
+    }
   });
 
-  // También guardar con Enter en el campo de key
   keyIn.addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('aafy-key-ok').click();
+  });
+  document.getElementById('aafy-drive-in').addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('aafy-key-ok').click();
   });
 })();
