@@ -219,31 +219,65 @@
         `https://www.googleapis.com/drive/v3/files?q='${DRIVE_FOLDER}'+in+parents` +
         `&fields=files(id,name,mimeType)&orderBy=name&key=${driveKey}`
       );
-      if (!listRes.ok) return null;
+      if (!listRes.ok) {
+        const err = await listRes.json().catch(() => ({}));
+        return { error: `Drive API ${listRes.status}: ${err?.error?.message || 'Sin acceso'}` };
+      }
       const { files = [] } = await listRes.json();
+      if (!files.length) return { error: 'La carpeta está vacía o no es accesible.' };
 
-      const sheets = files.filter(f =>
-        f.mimeType === 'application/vnd.google-apps.spreadsheet'
-      );
-      if (!sheets.length) return { archivos: files.map(f => f.name), nota: 'No se encontraron hojas de cálculo.' };
+      // Soportar Google Sheets Y archivos Excel (.xls / .xlsx)
+      const XLS_TYPES = [
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.google-apps.spreadsheet',
+      ];
+      const targets = files.filter(f => XLS_TYPES.includes(f.mimeType));
+      if (!targets.length) return { archivos: files.map(f => f.name + ' (' + f.mimeType + ')'), nota: 'No se encontraron archivos Excel ni Google Sheets.' };
 
-      // 2. Descargar y parsear cada hoja como CSV
+      // 2. Descargar y parsear cada archivo
+      // Requiere SheetJS (window.XLSX) — ya incluido en los dashboards
+      if (!window.XLSX) {
+        // Cargar SheetJS dinámicamente si no está disponible
+        await new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          s.onload = res; s.onerror = rej;
+          document.head.appendChild(s);
+        });
+      }
+
       let headers = null;
       const allRows = [];
 
-      for (const sheet of sheets.slice(0, 12)) {
+      for (const file of targets.slice(0, 12)) {
         try {
-          const csvRes = await fetch(
-            `https://docs.google.com/spreadsheets/d/${sheet.id}/export?format=csv&key=${driveKey}`
-          );
-          if (!csvRes.ok) continue;
-          const rows = parseCSV(await csvRes.text());
-          if (rows.length < 2) continue;
+          let rows;
+          if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
+            // Google Sheets → exportar como CSV
+            const csvRes = await fetch(
+              `https://docs.google.com/spreadsheets/d/${file.id}/export?format=csv&key=${driveKey}`
+            );
+            if (!csvRes.ok) continue;
+            rows = parseCSV(await csvRes.text());
+          } else {
+            // XLS / XLSX → descargar binario y parsear con SheetJS
+            const binRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveKey}`
+            );
+            if (!binRes.ok) continue;
+            const ab  = await binRes.arrayBuffer();
+            const wb  = window.XLSX.read(ab, { type: 'array' });
+            const ws  = wb.Sheets[wb.SheetNames[0]];
+            const raw = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+            rows = raw.map(r => r.map(c => String(c)));
+          }
+          if (!rows || rows.length < 2) continue;
           if (!headers) headers = rows[0];
           rows.slice(1).forEach(r => {
-            if (r.some(c => c)) allRows.push({ _archivo: sheet.name, _row: r });
+            if (r.some(c => c && c.trim())) allRows.push({ _archivo: file.name, _row: r });
           });
-        } catch { continue; }
+        } catch (e) { console.warn('Drive parse error:', file.name, e); continue; }
       }
 
       if (!allRows.length) return { archivos: sheets.map(s => s.name), nota: 'Archivos vacíos o sin acceso.' };
@@ -454,7 +488,24 @@
 
     let driveCtx = null;
     if (driveKey) {
-      try { driveCtx = await fetchDriveContext(driveKey); } catch { driveCtx = null; }
+      const driveMsg = addMsg('bot', '⏳ Consultando archivos de Drive...');
+      try {
+        driveCtx = await fetchDriveContext(driveKey);
+        if (driveCtx && driveCtx.error) {
+          driveMsg.textContent = '⚠ Drive: ' + driveCtx.error;
+          driveCtx = null;
+        } else if (!driveCtx) {
+          driveMsg.textContent = '⚠ Drive: No se pudo acceder a la carpeta. Verifica que la clave tenga la Drive API habilitada y que la carpeta sea accesible.';
+        } else if (driveCtx.nota) {
+          driveMsg.textContent = '⚠ Drive: ' + driveCtx.nota;
+          driveCtx = null;
+        } else {
+          driveMsg.textContent = `✓ Drive: ${driveCtx.total_registros} registros de ${driveCtx.archivos?.length || 0} archivo(s). Analizando...`;
+        }
+      } catch (e) {
+        driveMsg.textContent = '⚠ Drive error: ' + e.message;
+        driveCtx = null;
+      }
     }
 
     const prompt = `Eres un asistente fiscal experto de la Agencia de Administración Fiscal del Estado de Yucatán (AAFY). Responde en español de forma concisa, directa y profesional.
