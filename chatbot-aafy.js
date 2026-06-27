@@ -247,38 +247,54 @@
         });
       }
 
+      // Tomar solo los 2 archivos más recientes para no saturar el navegador
+      const toProcess = targets.slice(-2);
+
       let headers = null;
       const allRows = [];
 
-      for (const file of targets.slice(0, 12)) {
+      async function fetchWithTimeout(url, ms = 20000) {
+        const ctrl = new AbortController();
+        const tid  = setTimeout(() => ctrl.abort(), ms);
         try {
-          let rows;
-          if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
-            // Google Sheets → exportar como CSV
-            const csvRes = await fetch(
-              `https://docs.google.com/spreadsheets/d/${file.id}/export?format=csv&key=${driveKey}`
-            );
-            if (!csvRes.ok) continue;
-            rows = parseCSV(await csvRes.text());
-          } else {
-            // XLS / XLSX → descargar binario y parsear con SheetJS
-            const binRes = await fetch(
-              `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveKey}`
-            );
-            if (!binRes.ok) continue;
-            const ab  = await binRes.arrayBuffer();
-            const wb  = window.XLSX.read(ab, { type: 'array' });
-            const ws  = wb.Sheets[wb.SheetNames[0]];
-            const raw = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-            rows = raw.map(r => r.map(c => String(c)));
-          }
-          if (!rows || rows.length < 2) continue;
-          if (!headers) headers = rows[0];
-          rows.slice(1).forEach(r => {
-            if (r.some(c => c && c.trim())) allRows.push({ _archivo: file.name, _row: r });
-          });
-        } catch (e) { console.warn('Drive parse error:', file.name, e); continue; }
+          const res = await fetch(url, { signal: ctrl.signal });
+          clearTimeout(tid);
+          return res;
+        } catch (e) { clearTimeout(tid); throw e; }
       }
+
+      async function parseFile(file) {
+        if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
+          const res = await fetchWithTimeout(
+            `https://docs.google.com/spreadsheets/d/${file.id}/export?format=csv&key=${driveKey}`
+          );
+          if (!res.ok) return [];
+          return parseCSV(await res.text());
+        } else {
+          const res = await fetchWithTimeout(
+            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveKey}`
+          );
+          if (!res.ok) return [];
+          const ab  = await res.arrayBuffer();
+          const wb  = window.XLSX.read(ab, { type: 'array' });
+          const ws  = wb.Sheets[wb.SheetNames[0]];
+          return window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+                   .map(r => r.map(c => String(c)));
+        }
+      }
+
+      const results = await Promise.allSettled(toProcess.map(f => parseFile(f)));
+
+      results.forEach((result, i) => {
+        if (result.status !== 'fulfilled') return;
+        const rows = result.value;
+        if (!rows || rows.length < 2) return;
+        if (!headers) headers = rows[0];
+        rows.slice(1).forEach(r => {
+          if (r.some(c => c && String(c).trim()))
+            allRows.push({ _archivo: toProcess[i].name, _row: r });
+        });
+      });
 
       if (!allRows.length) return { archivos: sheets.map(s => s.name), nota: 'Archivos vacíos o sin acceso.' };
 
