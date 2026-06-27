@@ -178,72 +178,117 @@
     msgs.scrollTop = msgs.scrollHeight;
   }
 
+  /* ── Genera resumen estadístico del dataset completo ── */
+  function resumeDataset(rows) {
+    if (!rows || !rows.length) return null;
+    const keys = Object.keys(rows[0]);
+    const summary = { total: rows.length, campos: keys };
+
+    // Columnas numéricas: min, max, suma, promedio
+    keys.forEach(k => {
+      const nums = rows.map(r => Number(r[k])).filter(n => !isNaN(n) && n !== null);
+      if (nums.length > rows.length * 0.5) {
+        const sum = nums.reduce((a, b) => a + b, 0);
+        summary['num_' + k] = {
+          min: Math.min(...nums),
+          max: Math.max(...nums),
+          suma: sum,
+          promedio: +(sum / nums.length).toFixed(2),
+          count: nums.length
+        };
+      }
+    });
+
+    // Columnas booleanas/categóricas: conteo de true/valores únicos
+    keys.forEach(k => {
+      const vals = rows.map(r => r[k]);
+      const uniq = [...new Set(vals)];
+      if (uniq.length <= 10 && uniq.length > 1 && !summary['num_' + k]) {
+        const counts = {};
+        vals.forEach(v => { counts[v] = (counts[v] || 0) + 1; });
+        summary['cat_' + k] = counts;
+      }
+    });
+
+    // Top 20 por campo numérico más relevante (trabajadores)
+    const numKey = keys.find(k => summary['num_' + k] && k.toLowerCase().includes('trab'))
+                || keys.find(k => summary['num_' + k]);
+    if (numKey) {
+      summary['top20_por_' + numKey] = [...rows]
+        .sort((a, b) => Number(b[numKey]) - Number(a[numKey]))
+        .slice(0, 20);
+    }
+
+    return summary;
+  }
+
   /* ── Leer datos del dashboard ── */
   function getContext() {
     const snap = {};
+    snap.pagina = document.title;
 
-    // KPIs — dashboards de proyección (Profesional, ISN, Alcohólicas)
+    // ── 1. Dataset completo en memoria (tiene prioridad sobre el DOM) ──
+    // Padrón Nómina: variable global "allRows"
+    if (window.allRows && Array.isArray(window.allRows) && window.allRows.length) {
+      snap.total_registros = window.allRows.length;
+      // Resumen estadístico completo
+      snap.resumen = resumeDataset(window.allRows);
+      // Muestra de hasta 150 filas para análisis detallado
+      snap.muestra = window.allRows.slice(0, 150);
+    }
+
+    // Dashboards de proyección: variables comunes
+    const varNames = ['rowsData','omisosData','datos','records','tableData','dataRows','sheetData'];
+    varNames.forEach(v => {
+      if (window[v] && Array.isArray(window[v]) && window[v].length && !snap.resumen) {
+        snap.total_registros = window[v].length;
+        snap.resumen = resumeDataset(window[v]);
+        snap.muestra = window[v].slice(0, 150);
+      }
+    });
+
+    // ── 2. KPIs del DOM ──
     [
       'kpiAcumVal','kpiAcumSub','kpiAcumNote',
       'kpiMetaVal','kpiMetaSub','kpiMetaNote',
       'kpiProyVal','kpiProySub','kpiProyNote',
       'kpiOmisosVal','kpiOmisosSub','kpiOmisosNote',
       'statusMsg','periodDominant','footerUpdated',
+      'statusBar','updatedAt','pageInfo',
     ].forEach(id => {
       const el = document.getElementById(id);
-      if (el) { const t = el.innerText.trim(); if (t && t !== '-') snap[id] = t; }
+      if (el) { const t = el.innerText.trim(); if (t && t !== '-' && t !== '—') snap[id] = t; }
     });
 
-    // KPIs — dashboard Padrón Nómina
+    // KPIs Padrón Nómina
     const nominaKPIs = {
-      'k-imss': 'Total IMSS',
-      'k-nom':  'Padrón Nómina',
-      'k-sin':  'Sin Nómina',
-      'k-ced':  'Cedular Empleados %',
-      'k-pro':  'Profesional %',
-      'k-hos':  'Hospedaje %',
+      'k-imss': 'Total IMSS', 'k-nom': 'Padrón Nómina',
+      'k-sin': 'Sin Nómina',  'k-ced': 'Cedular Emp %',
+      'k-pro': 'Profesional %','k-hos': 'Hospedaje %',
     };
     Object.entries(nominaKPIs).forEach(([id, label]) => {
       const el = document.getElementById(id);
       if (el) { const t = el.innerText.trim(); if (t && t !== '—') snap[label] = t; }
     });
 
-    // Estado y fecha de actualización
-    ['statusBar','updatedAt','pageInfo','bannerText'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { const t = el.innerText.trim(); if (t) snap[id] = t; }
-    });
-
-    // Secciones de texto — proyección
-    ['ytdCard','avanceContent','segGrid'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { const t = el.innerText.trim(); if (t) snap[id] = t.slice(0, 600); }
-    });
-
-    // Tabla (primeras 20 filas)
-    const tb = document.querySelector('tbody');
-    if (tb) {
-      snap.tabla_muestra = Array.from(tb.querySelectorAll('tr'))
-        .slice(0, 20)
-        .map(r => r.innerText.replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .join('\n');
-    }
-
-    // KPI cards genéricos — cualquier dashboard
+    // KPI cards genéricos
     ['.kpi-card', '.kpi'].forEach(sel => {
-      document.querySelectorAll(sel).forEach((card, i) => {
-        const label = card.querySelector('.kpi-label');
-        const val   = card.querySelector('.kpi-value, .kpi-val');
-        if (label && val) {
-          const key = label.innerText.trim();
-          const v   = val.innerText.trim();
-          if (key && v && v !== '-' && v !== '—') snap['kpi_' + key] = v;
+      document.querySelectorAll(sel).forEach(card => {
+        const lbl = card.querySelector('.kpi-label');
+        const val = card.querySelector('.kpi-value, .kpi-val');
+        if (lbl && val) {
+          const k = lbl.innerText.trim(), v = val.innerText.trim();
+          if (k && v && v !== '-' && v !== '—') snap['kpi_' + k] = v;
         }
       });
     });
 
-    snap.pagina = document.title;
+    // Secciones de texto
+    ['ytdCard','avanceContent','segGrid'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { const t = el.innerText.trim(); if (t) snap[id] = t.slice(0, 800); }
+    });
+
     return JSON.stringify(snap, null, 2);
   }
 
@@ -276,7 +321,7 @@ Responde de forma breve. Usa números exactos cuando los tengas. Si detectas alg
 
     try {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${gemKey}`,
+        `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${gemKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
