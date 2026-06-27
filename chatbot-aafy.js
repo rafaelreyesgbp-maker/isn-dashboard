@@ -265,25 +265,35 @@
 
       async function parseFile(file) {
         if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
+          // Google Sheets → CSV solo columnas A:N (mucho más ligero)
           const res = await fetchWithTimeout(
             `https://docs.google.com/spreadsheets/d/${file.id}/export?format=csv&key=${driveKey}`
           );
           if (!res.ok) return [];
           return parseCSV(await res.text());
         } else {
+          // XLS/XLSX → descargar y parsear solo primeras 5000 filas, cols A-N
           const res = await fetchWithTimeout(
-            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveKey}`
+            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveKey}`,
+            30000
           );
           if (!res.ok) return [];
-          const ab  = await res.arrayBuffer();
-          const wb  = window.XLSX.read(ab, { type: 'array' });
-          const ws  = wb.Sheets[wb.SheetNames[0]];
-          return window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
-                   .map(r => r.map(c => String(c)));
+          const ab = await res.arrayBuffer();
+          const wb = window.XLSX.read(ab, { type: 'array', sheetRows: 5000 });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const raw = window.XLSX.utils.sheet_to_json(ws, {
+            header: 1, defval: '',
+            range: { s: { r: 0, c: 0 }, e: { r: 5000, c: 13 } }  // solo A-N
+          });
+          return raw.map(r => r.map(c => String(c)));
         }
       }
 
-      const results = await Promise.allSettled(toProcess.map(f => parseFile(f)));
+      // Solo el archivo más reciente para XLS pesados; 2 si son Google Sheets
+      const isGSheets = toProcess.every(f => f.mimeType === 'application/vnd.google-apps.spreadsheet');
+      const filesToRun = isGSheets ? toProcess : toProcess.slice(-1);
+
+      const results = await Promise.allSettled(filesToRun.map(f => parseFile(f)));
 
       results.forEach((result, i) => {
         if (result.status !== 'fulfilled') return;
@@ -292,7 +302,7 @@
         if (!headers) headers = rows[0];
         rows.slice(1).forEach(r => {
           if (r.some(c => c && String(c).trim()))
-            allRows.push({ _archivo: toProcess[i].name, _row: r });
+            allRows.push({ _archivo: filesToRun[i].name, _row: r });
         });
       });
 
