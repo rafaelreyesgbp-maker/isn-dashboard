@@ -321,7 +321,7 @@ Responde de forma breve. Usa números exactos cuando los tengas. Si detectas alg
 
     try {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${gemKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${gemKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
