@@ -68,15 +68,10 @@ def parse_sheet(ws):
     if hrow < 0:
         return []
 
-    # Detectar columna RFC real (puede estar desplazada)
-    rfc_ci = header.index("RFC")
-    for c in range(rfc_ci, min(rfc_ci + 5, ws.ncols)):
-        val = str(ws.cell_value(hrow + 1, c)).strip()
-        if len(val) >= 10:
-            rfc_ci = c
-            break
-
-    contrib_ci  = rfc_ci + 1
+    # Columna RFC: usar posición del encabezado directamente (col A=0)
+    # Contribuyente es siempre la columna inmediata siguiente (col B=1)
+    rfc_ci     = header.index("RFC")
+    contrib_ci = rfc_ci + 1
     # Columnas por posición fija: F=5 (periodo), J=9 (estímulo), L=11 (impuesto), N=13 (act)
     periodo_ci  = 5
     impuesto_ci = 11
