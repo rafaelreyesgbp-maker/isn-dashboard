@@ -6,6 +6,8 @@ recalcula proyecciones y actualiza los datos embebidos en el HTML.
 """
 
 import json, re, sys, requests, xlrd
+
+RFC_RE = re.compile(r'^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$')
 from datetime import datetime
 from collections import defaultdict
 
@@ -68,10 +70,21 @@ def parse_sheet(ws):
     if hrow < 0:
         return []
 
-    # Columna RFC: usar posición del encabezado directamente (col A=0)
-    # Contribuyente es siempre la columna inmediata siguiente (col B=1)
-    rfc_ci     = header.index("RFC")
+    # Detectar columna RFC buscando en las primeras filas de datos
+    # la columna cuyo valor matchee el patrón RFC mexicano
+    hdr_rfc = header.index("RFC") if "RFC" in header else 0
+    rfc_ci = hdr_rfc
+    for data_row in range(hrow + 1, min(hrow + 10, ws.nrows)):
+        for c in range(min(5, ws.ncols)):
+            val = str(ws.cell_value(data_row, c)).strip().upper()
+            if RFC_RE.match(val):
+                rfc_ci = c
+                break
+        else:
+            continue
+        break
     contrib_ci = rfc_ci + 1
+    print(f"    rfc_ci={rfc_ci}, contrib_ci={contrib_ci} (header RFC en col {hdr_rfc})")
     # Columnas por posición fija: F=5 (periodo), J=9 (estímulo), L=11 (impuesto), N=13 (act)
     periodo_ci  = 5
     impuesto_ci = 11
@@ -88,6 +101,8 @@ def parse_sheet(ws):
                 rfc = str(rfc_raw).strip().upper()
             if not rfc or rfc in ("RFC", "0", ""):
                 continue
+            # Marcar si el RFC tiene formato válido (para omisos)
+            rfc_valido = bool(RFC_RE.match(rfc))
 
             # Periodo: si no tiene formato YYYYMM válido se deja vacío
             # (la fila igual cuenta para recaudación, pero no para omisos)
@@ -110,7 +125,8 @@ def parse_sheet(ws):
                 continue  # fila vacía
 
             records.append({
-                "rfc": rfc, "periodo": periodo,
+                "rfc": rfc, "rfc_valido": rfc_valido,
+                "periodo": periodo,
                 "recaudacion": imp + act, "contrib": contrib,
                 "estimulo": estimulo
             })
@@ -199,6 +215,8 @@ def compute_month(month_num, all_month_data):
 
     for m in range(1, month_num + 1):
         for r in all_month_data.get(m, []):
+            if not r.get('rfc_valido', True):  # skip RFCs con formato inválido para omisos
+                continue
             if r['periodo'] and len(str(r['periodo'])) == 6:
                 gp = global_periods[r['rfc']]
                 if r['periodo'] not in gp or r['recaudacion'] > gp[r['periodo']]:
@@ -221,6 +239,8 @@ def compute_month(month_num, all_month_data):
     for rm in ref_months:
         seen = set()
         for r in all_month_data.get(rm, []):
+            if not r.get('rfc_valido', True):
+                continue
             if r['periodo'] and len(str(r['periodo'])) == 6:
                 rp = rfc_ref_periods[r['rfc']]
                 if r['periodo'] not in rp or r['recaudacion'] > rp[r['periodo']]:
