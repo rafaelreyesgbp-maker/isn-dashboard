@@ -201,6 +201,12 @@ def compute_month(month_num, all_month_data):
     dominant  = get_dominant(cur)
     acumulado = sum(r['recaudacion'] for r in cur)
 
+    # Periodo esperado del mes vigente: si es Julio (7), ISN cubre Junio → 202606
+    # Fórmula: mes anterior del año 2026 (o Dic-2025 si es Enero)
+    exp_month = month_num - 1 if month_num > 1 else 12
+    exp_year  = 2026 if month_num > 1 else 2025
+    expected_period = f"{exp_year}{exp_month:02d}"
+
     # Todos los meses ANTERIORES al vigente con datos
     prev_months = [m for m in range(1, month_num) if all_month_data.get(m)]
     n_prev = len(prev_months)
@@ -261,14 +267,13 @@ def compute_month(month_num, all_month_data):
 
         avg_monthly = sum(amounts) / len(amounts)
 
-        # Periodos pendientes: retroceder desde dominant hasta encontrar un periodo pagado.
-        # Si no detecta ninguno faltante pero el RFC no está en el mes vigente,
-        # el periodo dominant es el pendiente (lo pagó en un archivo anterior, pero
-        # no se presentó en el mes vigente = debe el periodo vigente).
+        # Periodos pendientes: usar el periodo ESPERADO del mes vigente (no dominant,
+        # que puede estar sesgado si el archivo tiene pocos registros).
+        # Ej: Julio (mes 7) → expected_period = 202606 (Jun-26)
         paid_set = global_periods[rfc]
-        missing  = get_missing_periods(paid_set, dominant, 12) if dominant else []
-        if not missing and dominant:
-            missing = [dominant]  # siempre debe al menos el periodo del mes vigente
+        missing  = get_missing_periods(paid_set, expected_period, 12)
+        if not missing:
+            missing = [expected_period]  # siempre debe al menos el periodo esperado
 
         # Segmentación basada en frecuencia de pago sobre todos los meses anteriores
         seg = ('alta'       if cnt >= n_prev and n_prev >= 2
