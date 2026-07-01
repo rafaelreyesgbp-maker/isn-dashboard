@@ -197,111 +197,86 @@ def get_missing_periods(paid_set, dominant, max_back=12, stop_before=None):
     return missing
 
 def compute_month(month_num, all_month_data):
-    cur      = all_month_data.get(month_num, [])
-    dominant = get_dominant(cur)
+    cur       = all_month_data.get(month_num, [])
+    dominant  = get_dominant(cur)
     acumulado = sum(r['recaudacion'] for r in cur)
 
-    # Meses de referencia: hasta 4 anteriores con datos
-    ref_months = [m for m in range(max(1, month_num - 4), month_num)
-                  if all_month_data.get(m)]
-    n_ref = len(ref_months)
+    # Todos los meses ANTERIORES al vigente con datos
+    prev_months = [m for m in range(1, month_num) if all_month_data.get(m)]
+    n_prev = len(prev_months)
 
-    # Periodos pagados globalmente (todos los meses hasta este)
-    global_periods = defaultdict(dict)
-    global_contrib = {}
-    # RFCs con al menos 1 pago 2026 en cualquier mes (para candidatura ampliada)
-    any_2026_payer = set()
-    all_months_periods = defaultdict(dict)  # para avg cuando no hay datos en ref_months
+    # RFC que YA pagaron en el mes vigente → se excluyen de omisos
+    paid_this_month = {
+        r['rfc'] for r in cur
+        if r.get('rfc_valido', True)
+    }
 
-    for m in range(1, month_num + 1):
+    # Construir universo de meses anteriores:
+    #   rfc_month_count[rfc]  = cuántos meses anteriores pagó (1 conteo por mes, sin duplicar)
+    #   rfc_month_totals[rfc] = lista de totales mensuales (para calcular promedio)
+    #   global_periods[rfc]   = set de periodos pagados en cualquier mes (para "pending")
+    rfc_month_count  = defaultdict(int)
+    rfc_month_totals = defaultdict(list)
+    rfc_contrib_map  = {}
+    global_periods   = defaultdict(set)
+
+    for m in prev_months:
+        seen_m       = set()
+        month_total  = defaultdict(float)
         for r in all_month_data.get(m, []):
-            if not r.get('rfc_valido', True):  # skip RFCs con formato inválido para omisos
-                continue
-            if r['periodo'] and len(str(r['periodo'])) == 6:
-                gp = global_periods[r['rfc']]
-                if r['periodo'] not in gp or r['recaudacion'] > gp[r['periodo']]:
-                    gp[r['periodo']] = r['recaudacion']
-                if str(r['periodo']).startswith('2026'):
-                    any_2026_payer.add(r['rfc'])
-                # Guardar todos los montos para calcular avg cuando ref_months no cubre
-                ap = all_months_periods[r['rfc']]
-                if r['periodo'] not in ap or r['recaudacion'] > ap[r['periodo']]:
-                    ap[r['periodo']] = r['recaudacion']
-            if r['rfc'] not in global_contrib and r['contrib']:
-                global_contrib[r['rfc']] = r['contrib']
-
-    # Conteo de meses de referencia y montos por RFC (ventana últimos 4 meses)
-    rfc_ref_count   = defaultdict(int)
-    rfc_ref_periods = defaultdict(dict)
-    rfc_contrib     = {}
-    paid_2026_in_ref = defaultdict(set)
-
-    for rm in ref_months:
-        seen = set()
-        for r in all_month_data.get(rm, []):
             if not r.get('rfc_valido', True):
                 continue
+            rfc = r['rfc']
+            if rfc not in seen_m:
+                seen_m.add(rfc)
+                rfc_month_count[rfc] += 1
+            month_total[rfc] += r['recaudacion']
+            if rfc not in rfc_contrib_map and r['contrib']:
+                rfc_contrib_map[rfc] = r['contrib']
             if r['periodo'] and len(str(r['periodo'])) == 6:
-                rp = rfc_ref_periods[r['rfc']]
-                if r['periodo'] not in rp or r['recaudacion'] > rp[r['periodo']]:
-                    rp[r['periodo']] = r['recaudacion']
-                if str(r['periodo']).startswith('2026'):
-                    paid_2026_in_ref[r['rfc']].add(str(r['periodo']))
-            if r['rfc'] not in seen:
-                seen.add(r['rfc'])
-                rfc_ref_count[r['rfc']] += 1
-            if r['rfc'] not in rfc_contrib and r['contrib']:
-                rfc_contrib[r['rfc']] = r['contrib']
+                global_periods[rfc].add(str(r['periodo']))
+        # Guardar total mensual por RFC para calcular promedio
+        for rfc, total in month_total.items():
+            rfc_month_totals[rfc].append(total)
 
-    # Candidatos:
-    #   1) ≥2 meses de referencia recientes (ventana 4 meses)
-    #   2) ≥2 periodos 2026 distintos en ref_months (lote payers)
-    #   3) cualquier RFC con ≥1 pago 2026 en cualquier mes anterior (captura omisos desde enero)
-    candidates = {rfc for rfc, cnt in rfc_ref_count.items() if cnt >= 2}
-    candidates |= {rfc for rfc, ps in paid_2026_in_ref.items() if len(ps) >= 2}
-    candidates |= any_2026_payer  # ampliado: cualquier pagador 2026 que no pagó el mes vigente
+    # Acumular periodos del mes vigente también (para cálculo de "missing")
+    for r in cur:
+        if r.get('rfc_valido', True) and r['periodo'] and len(str(r['periodo'])) == 6:
+            global_periods[r['rfc']].add(str(r['periodo']))
+
+
+    # Candidatos: RFC con ≥2 meses anteriores pagados (sin duplicar por RFC)
+    candidates = {rfc for rfc, cnt in rfc_month_count.items() if cnt >= 2}
 
     omisos = []
     for rfc in candidates:
-        cnt         = rfc_ref_count.get(rfc, 0)
-        periods_2026 = paid_2026_in_ref.get(rfc, set())
-        if cnt < 2 and len(periods_2026) < 2:
+        # Excluir los que ya pagaron en el mes vigente
+        if rfc in paid_this_month:
             continue
 
-        paid_set = set(global_periods[rfc].keys())
-        if not dominant or dominant in paid_set:
+        cnt     = rfc_month_count[rfc]
+        amounts = rfc_month_totals.get(rfc, [])
+        if not amounts:
             continue
 
-        has_2026 = any(p.startswith('2026') for p in global_periods[rfc])
-        missing  = (get_missing_periods(paid_set, dominant, 12, '202601')
-                    if not has_2026
-                    else get_missing_periods(paid_set, dominant, 12))
-        if not missing:
-            continue
+        avg_monthly = sum(amounts) / len(amounts)
 
-        # Usar montos de ref_months si existen; si no, caer en all_months_periods
-        ref_amounts = list(rfc_ref_periods[rfc].values())
-        if not ref_amounts:
-            ref_amounts = list(all_months_periods[rfc].values())
-        if not ref_amounts:
-            continue
+        # Periodos pendientes: retroceder desde dominant hasta encontrar un periodo pagado
+        paid_set = global_periods[rfc]
+        missing  = get_missing_periods(paid_set, dominant, 12) if dominant else []
 
-        avg = sum(ref_amounts) / len(ref_amounts)
-        est = avg * len(missing)
-
-        # Segmentación: basada en apariciones en ventana de 4 meses
-        # RFCs que entraron solo por any_2026_payer (cnt<2) van a seguimiento
-        seg = ('omisos_totales' if not has_2026
-               else 'alta'       if cnt >= n_ref and n_ref >= 2
+        # Segmentación basada en frecuencia de pago sobre todos los meses anteriores
+        seg = ('alta'       if cnt >= n_prev and n_prev >= 2
                else 'media'      if cnt >= 3
                else 'seguimiento')
 
-        contrib       = rfc_contrib.get(rfc) or global_contrib.get(rfc) or ''
+        contrib        = rfc_contrib_map.get(rfc, '')
         pending_labels = [format_period(p) for p in missing]
 
         omisos.append({
             'rfc': rfc, 'contrib': contrib, 'count': cnt,
-            'avg': round(est), 'n_missing': len(missing),
+            'avg': round(avg_monthly),
+            'n_missing': len(missing),
             'pending': pending_labels, 'seg': seg
         })
 
