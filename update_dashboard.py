@@ -307,7 +307,7 @@ def compute_month(month_num, all_month_data):
         'mes_num':          month_num,
         'meta':             meta,
         'dominant_period':  int(dominant) if dominant else 0,
-        'ref_months':       ref_months,
+        'ref_months':       prev_months,
         'acumulado_real':   round(acumulado),
         'total_omisos':     len(omisos),
         'total_esperado':   esperado,
