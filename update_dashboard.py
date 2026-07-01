@@ -5,7 +5,8 @@ Descarga archivos de nómina ISN desde Google Drive,
 recalcula proyecciones y actualiza los datos embebidos en el HTML.
 """
 
-import json, re, sys, requests, xlrd
+import json, re, sys, requests, xlrd, statistics
+from math import floor
 
 RFC_RE = re.compile(r'^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$')
 from datetime import datetime
@@ -265,7 +266,8 @@ def compute_month(month_num, all_month_data):
         if not amounts:
             continue
 
-        avg_monthly = sum(amounts) / len(amounts)
+        # Mediana mensual (robusta frente a anomalías como enero/aguinaldos)
+        median_monthly = statistics.median(amounts)
 
         # Periodos pendientes: usar el periodo ESPERADO del mes vigente (no dominant,
         # que puede estar sesgado si el archivo tiene pocos registros).
@@ -275,9 +277,13 @@ def compute_month(month_num, all_month_data):
         if not missing:
             missing = [expected_period]  # siempre debe al menos el periodo esperado
 
-        # Segmentación basada en frecuencia de pago sobre todos los meses anteriores
-        seg = ('alta'       if cnt >= n_prev and n_prev >= 2
-               else 'media'      if cnt >= 3
+        # Importe estimado = mediana × número de meses pendientes
+        importe_estimado = median_monthly * len(missing)
+
+        # Segmentación 4 niveles basada en frecuencia de pago
+        seg = ('alta'        if cnt == n_prev
+               else 'media'  if cnt >= floor(n_prev * 0.75)
+               else 'baja'   if cnt >= 3
                else 'seguimiento')
 
         contrib        = rfc_contrib_map.get(rfc, '')
@@ -285,7 +291,8 @@ def compute_month(month_num, all_month_data):
 
         omisos.append({
             'rfc': rfc, 'contrib': contrib, 'count': cnt,
-            'avg': round(avg_monthly),
+            'avg': round(importe_estimado),
+            'median': round(median_monthly),
             'n_missing': len(missing),
             'pending': pending_labels, 'seg': seg
         })
@@ -306,7 +313,8 @@ def compute_month(month_num, all_month_data):
         segments[key]['monto'] += o['avg']
         segments[key]['omisos'].append({
             'rfc': o['rfc'], 'contrib': o['contrib'], 'avg': o['avg'],
-            'count': o['count'], 'n_missing': o['n_missing'], 'pending': o['pending']
+            'median': o['median'], 'count': o['count'],
+            'n_missing': o['n_missing'], 'pending': o['pending']
         })
     for s in segments.values():
         s['monto'] = round(s['monto'])
@@ -330,7 +338,8 @@ def compute_month(month_num, all_month_data):
         'distribution':     [],
         'omisos': [
             {'rfc': o['rfc'], 'contrib': o['contrib'], 'avg': o['avg'],
-             'count': o['count'], 'n_missing': o['n_missing'],
+             'median': o['median'], 'count': o['count'],
+             'n_missing': o['n_missing'],
              'pending': o['pending'], 'seg': o['seg']}
             for o in omisos[:5000]
         ]
