@@ -261,9 +261,14 @@ def compute_month(month_num, all_month_data):
 
         avg_monthly = sum(amounts) / len(amounts)
 
-        # Periodos pendientes: retroceder desde dominant hasta encontrar un periodo pagado
+        # Periodos pendientes: retroceder desde dominant hasta encontrar un periodo pagado.
+        # Si no detecta ninguno faltante pero el RFC no está en el mes vigente,
+        # el periodo dominant es el pendiente (lo pagó en un archivo anterior, pero
+        # no se presentó en el mes vigente = debe el periodo vigente).
         paid_set = global_periods[rfc]
         missing  = get_missing_periods(paid_set, dominant, 12) if dominant else []
+        if not missing and dominant:
+            missing = [dominant]  # siempre debe al menos el periodo del mes vigente
 
         # Segmentación basada en frecuencia de pago sobre todos los meses anteriores
         seg = ('alta'       if cnt >= n_prev and n_prev >= 2
